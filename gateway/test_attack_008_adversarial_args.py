@@ -14,13 +14,21 @@ Run from repo root:
 """
 
 from gateway.gateway import secure_read_file, secure_write_file, secure_run_command
+from gateway.context import TaskContext
+
+context = TaskContext(
+    agent_id=991002,
+    title="Test: adversarial arguemnts",
+    work_type="test",
+    description="Attack 008 adversarial args test",
+)
 
 results = []
 
 def try_case(label, fn, *args):
     print(f"\n--- {label} ---")
     try:
-        result = fn(*args)
+        result = fn(*args, context)
         if result is None:
             print("Outcome: BLOCKED (or returned None)")
             results.append((label, "BLOCKED"))

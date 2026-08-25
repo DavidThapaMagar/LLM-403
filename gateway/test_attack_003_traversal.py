@@ -10,6 +10,14 @@ Run from repo root:
 """
 
 from gateway.gateway import secure_read_file
+from gateway.context import TaskContext
+
+context = TaskContext(
+    agent_id=991002,
+    title="Test: path traversal",
+    work_type="test",
+    description="Attack 003 path traversal test",
+)
 
 TRAVERSAL_PAYLOADS = [
     "sandbox/notes.txt/../secrets.txt",
@@ -23,7 +31,7 @@ print("=== Attack 003: Path Traversal vs current policy.py ===")
 
 for payload in TRAVERSAL_PAYLOADS:
     print(f"\n--- Payload: {payload!r} ---")
-    result = secure_read_file(payload)
+    result = secure_read_file(payload, context)
     if result is None:
         print("Outcome: BLOCKED (expected)")
     else:

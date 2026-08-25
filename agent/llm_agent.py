@@ -4,13 +4,14 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 from gateway.router import execute_tool
+from gateway.context import TaskContext
 
 
 load_dotenv()
 
 client = OpenAI()
 
-MAX_STEPS = 2
+MAX_STEPS = 8
 
 
 TOOLS = [
@@ -42,7 +43,7 @@ TOOLS = [
                     "type": "string",
                     "description": "The exact shell command to run."
                 }
-            },
+             },
             "required": ["command"],
             "additionalProperties": False
         },
@@ -73,7 +74,15 @@ TOOLS = [
 
 
 
-def ask_agent(user_request):
+def ask_agent(user_request, agent_id=991002, title="Untitled task", work_type="general", description=""):
+    context = TaskContext(
+        agent_id=agent_id,
+        title=title,
+        work_type=work_type,
+        description=description or user_request,
+    )
+    print(f"\n[TASK CONTEXT] {context}")
+
     response = client.responses.create(
         model="gpt-5.6-luna",
         instructions=(
@@ -92,6 +101,7 @@ def ask_agent(user_request):
 
     for step in range(MAX_STEPS):
         print(f"\n=== STEP {step + 1}/{MAX_STEPS} ===")
+        context.record_step()
 
         tool_calls = [
             item
@@ -119,6 +129,7 @@ def ask_agent(user_request):
             result = execute_tool(
                 call.name,
                 arguments,
+                context,
             )
 
             print("\n[TOOL RESULT]")
