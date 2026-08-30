@@ -13,6 +13,14 @@ precision as the project has developed:
 > this task, with this authority, given the sequence of actions that led
 > here?
 
+## Dashboard Preview
+
+![LLM403 dashboard](docs/screenshots/dashboard.png)
+
+*Live filters, click-to-expand resource details with auto-classified
+attack tags, and click-to-expand task traces — all client-side, no
+server required. See Phase 4 below.*
+
 ## Architecture
 AI Agent
 ↓
@@ -97,30 +105,51 @@ Turned a flat allow-list into a real authorization system:
 
 ## Project Structure
 agent/
+
 llm_agent.py — the agent loop, tool definitions, model calls
+
 tools.py — raw tool implementations (unguarded)
 
 gateway/
+
 context.py — TaskContext: identity, delegation, trajectory history
+
 permissions.py — task-scoped permission sets, recursive delegation logic
+
 policy.py — is_action_allowed: the single authorization decision point
+
 risk.py — LOW/MEDIUM/HIGH risk classification per action+resource
+
 trajectory.py — sequence-based policies (repeated-blocked-attempts lockout)
+
 gateway.py — secure_* wrappers: every tool call's real entry point
+
 router.py — maps tool names to secure_* functions
+
 events.py — structured JSON logging of every decision
+
 trace.py — CLI: full trace for one task
+
 metrics.py — CLI: aggregate stats across all events
+
 dashboard.py — generates the interactive LLM403 HTML dashboard
+
 rag.py — mock keyword-based knowledge-base search
+
 web.py — mock browser (URL → local HTML file)
+
 egress.py — output scrubber: catches literal leaks in final output
+
 test_*.py — attack tests and verification tests, one per finding
 
 attacks/ — planted prompt-injection files, v1 through v7c and a2a
+
 knowledge_base/ — RAG documents, 3 legitimate + 1 poisoned
+
 web_pages/ — mock webpages, 2 legitimate + 1 with hidden injection
+
 sandbox/ — notes.txt (readable/writable) and secrets.txt (the target)
+
 logs/ — event log + generated dashboard (gitignored)
 
 
