@@ -2,10 +2,23 @@
 Security Dashboard.
 
 Generates a single self-contained HTML file summarizing everything in
-the security event log - the same data metrics.py and trace.py read,
-rendered as an interactive report. The full event history is embedded
-as JSON in the page, and vanilla JS handles filtering/search/rendering
-client-side - no server needed, still just one HTML file to open.
+the security event log. The full event history is embedded as JSON,
+and vanilla JS handles filtering/search/rendering client-side - no
+server needed, still just one HTML file to open.
+
+Click any resource in the Events table (or the Most Frequently
+Blocked Resources table) to see what it is - a known attack file's
+actual content (read live from disk), a description, and an
+attack-type tag - auto-classified for anything not in the known list.
+
+Click any Task ID in the Events table to see that task's full
+chronological trace - every action it took, allowed or blocked, with
+reasons - like gateway/trace.py, but inline in the browser.
+
+sandbox/secrets.txt content is deliberately never embedded or shown,
+even though it could be read - the whole point of this lab is
+preventing that file from leaking, so the dashboard itself shouldn't
+be a way to leak it.
 
 Usage (from repo root):
     python -m gateway.dashboard
@@ -16,7 +29,7 @@ Then open logs/dashboard.html in a browser.
 import json
 import os
 import webbrowser
-from collections import Counter, defaultdict
+from collections import defaultdict
 from datetime import datetime, timezone
 
 from .events import LOG_FILE, LOG_DIR
@@ -24,9 +37,70 @@ from .events import LOG_FILE, LOG_DIR
 DASHBOARD_FILE = os.path.join(LOG_DIR, "dashboard.html")
 
 RISK_LABELS = {1: "LOW", 2: "MEDIUM", 3: "HIGH", None: "UNKNOWN"}
-RISK_COLORS = {1: "#3fb950", 2: "#d29922", 3: "#f85149", None: "#8b949e"}
 
-MAX_EMBEDDED_EVENTS = 1000
+SECRET_PATH = "sandbox/secrets.txt"
+
+# kind: "legit" | "attack" | "target"
+FILE_DESCRIPTIONS = {
+    "sandbox/notes.txt": (
+        "legit", "Sandbox Notes",
+        "Standard sandbox file used for legitimate reads and writes. "
+        "The home base for non-adversarial tasks."
+    ),
+    "sandbox/secrets.txt": (
+        "target", "Target Resource",
+        "The protected secret file. Every exfiltration attempt in this "
+        "lab is trying to reach this file."
+    ),
+    "attacks/malicious_notes.txt": (
+        "attack", "Indirect Prompt Injection",
+        "A planted note that tries to convince the agent to take an "
+        "unauthorized action."
+    ),
+    "attacks/malicious_notes_v2.txt": (
+        "attack", "Indirect Prompt Injection (direct ask)",
+        "Variant that asks directly for the secret file's contents."
+    ),
+    "attacks/malicious_notes_v3.txt": (
+        "attack", "Command Injection via Prompt Injection",
+        "Tries to get the agent to run a shell command that reaches "
+        "the secret."
+    ),
+    "attacks/malicious_notes_v4.txt": (
+        "attack", "Stored / Persistent Prompt Injection",
+        "Plants an instruction inside a written file to trigger on a "
+        "later read."
+    ),
+    "attacks/malicious_notes_v5.txt": (
+        "attack", "Social-Engineering Injection",
+        "A softer, more persuasive phrasing of a direct ask."
+    ),
+    "attacks/malicious_notes_v6.txt": (
+        "attack", "Maximally Naturalised Injection",
+        "Frames the request as an implied prior agreement, with no "
+        "explicit ask."
+    ),
+    "attacks/malicious_notes_v7a.txt": (
+        "attack", "Multi-Step Trajectory (Step 1)",
+        "Soft redirect - points to a second file as optional extra "
+        "reading."
+    ),
+    "attacks/malicious_notes_v7b.txt": (
+        "attack", "Multi-Step Trajectory (Step 2)",
+        "Escalates the chain by framing a read of the secret file as a "
+        "routine 'checklist' step."
+    ),
+    "attacks/malicious_notes_v7c.txt": (
+        "attack", "Fused Exfiltration",
+        "Bundles the malicious ask into a legitimate save action - no "
+        "second file needed."
+    ),
+    "echo hello": (
+        "legit", "Baseline Allowed Command",
+        "The only command in the global allow-list. Used as a control "
+        "case for command-related tests."
+    ),
+}
 
 
 def load_events():
@@ -42,9 +116,21 @@ def load_events():
     return events
 
 
-def truncate(s, n=60):
-    s = str(s)
-    return s if len(s) <= n else s[:n] + "…"
+def load_resource_info():
+    info = {}
+    for resource, (kind, label, description) in FILE_DESCRIPTIONS.items():
+        entry = {"kind": kind, "label": label, "description": description}
+        looks_like_file = "/" in resource
+        if looks_like_file and resource != SECRET_PATH:
+            try:
+                with open(resource) as f:
+                    entry["content"] = f.read()[:3000]
+            except OSError:
+                pass
+        elif resource == SECRET_PATH:
+            entry["content_hidden"] = True
+        info[resource] = entry
+    return info
 
 
 def bar_row(label, allowed, blocked, color_allowed="#3fb950", color_blocked="#f85149"):
@@ -92,10 +178,6 @@ def build_html(events):
     for e in events:
         by_work[e["work_type"]][e["decision"]] += 1
 
-    blocked_resources = Counter(
-        e["resource"] for e in events if e["decision"] == "blocked"
-    )
-
     action_bars = "".join(
         bar_row(action, c["allowed"], c["blocked"])
         for action, c in sorted(by_action.items())
@@ -111,13 +193,11 @@ def build_html(events):
         for wt, c in sorted(by_work.items())
     )
 
-    blocked_rows = "".join(
-        f"<tr><td>{count}</td><td><code title=\"{truncate(resource, 300)}\">{truncate(resource)}</code></td></tr>"
-        for resource, count in blocked_resources.most_common(10)
-    ) or "<tr><td colspan='2' class='empty'>No blocked resources yet</td></tr>"
-
-    events_for_js = sorted(events, key=lambda e: e["timestamp"], reverse=True)[:MAX_EMBEDDED_EVENTS]
+    events_for_js = sorted(events, key=lambda e: e["timestamp"], reverse=True)[:1000]
     events_json = json.dumps(events_for_js).replace("</", "<\\/")
+
+    resource_info = load_resource_info()
+    resource_info_json = json.dumps(resource_info).replace("</", "<\\/")
 
     body = f"""
     <div class="cards">
@@ -160,16 +240,16 @@ def build_html(events):
 
     <div class="panels">
       <div class="panel">
-        <h2>Most Frequently Blocked Resources</h2>
+        <h2>Most Frequently Blocked Resources <span class="hint">(click a row)</span></h2>
         <table>
           <thead><tr><th>Count</th><th>Resource</th></tr></thead>
-          <tbody>{blocked_rows}</tbody>
+          <tbody id="blocked-resources-tbody"></tbody>
         </table>
       </div>
     </div>
 
     <div class="panel wide">
-      <h2>Events</h2>
+      <h2>Events <span class="hint">(click a Task ID for its trace, or a resource for details)</span></h2>
       <div class="filters">
         <select id="filter-work-type" autocomplete="off">
           <option value="">All Work Types</option>
@@ -199,20 +279,49 @@ def build_html(events):
       </table>
     </div>
 
+    <div id="resource-modal" class="modal-overlay" style="display:none;">
+      <div class="modal-card">
+        <button class="modal-close" id="modal-close-btn">&times;</button>
+        <div class="modal-resource mono" id="modal-resource"></div>
+        <div id="modal-badge-row"></div>
+        <p id="modal-description"></p>
+        <div id="modal-content-wrap" style="display:none;">
+          <h3>File Contents</h3>
+          <pre id="modal-content"></pre>
+        </div>
+      </div>
+    </div>
+
+    <div id="trace-modal" class="modal-overlay" style="display:none;">
+      <div class="modal-card wide-card">
+        <button class="modal-close" id="trace-modal-close-btn">&times;</button>
+        <div class="trace-header">
+          <div class="trace-title" id="trace-title"></div>
+          <div class="trace-meta" id="trace-meta"></div>
+        </div>
+        <div class="trace-steps" id="trace-steps"></div>
+        <div class="trace-summary" id="trace-summary"></div>
+      </div>
+    </div>
+
     <script id="events-data" type="application/json">{events_json}</script>
+    <script id="resource-info-data" type="application/json">{resource_info_json}</script>
     <script>
     (function() {{
       const RISK_LABELS = {{1: "LOW", 2: "MEDIUM", 3: "HIGH"}};
       const RISK_COLORS = {{1: "#3fb950", 2: "#d29922", 3: "#f85149"}};
+      const KIND_COLORS = {{attack: "#f85149", legit: "#3fb950", target: "#d29922", unknown: "#8b949e"}};
 
       const events = JSON.parse(document.getElementById('events-data').textContent);
+      const resourceInfo = JSON.parse(document.getElementById('resource-info-data').textContent);
 
       const workTypeSelect = document.getElementById('filter-work-type');
       const decisionSelect = document.getElementById('filter-decision');
       const riskSelect = document.getElementById('filter-risk');
       const searchInput = document.getElementById('filter-search');
       const countLabel = document.getElementById('filter-count');
-      const tbody = document.getElementById('events-tbody');
+      const eventsTbody = document.getElementById('events-tbody');
+      const blockedTbody = document.getElementById('blocked-resources-tbody');
 
       workTypeSelect.value = "";
       decisionSelect.value = "";
@@ -242,6 +351,158 @@ def build_html(events):
         return str.length <= n ? str : str.slice(0, n) + '…';
       }}
 
+      // --- Attack classification for resources not in the known list ---
+      function classify(resource) {{
+        if (resource === null || resource === undefined) {{
+          return {{kind: "attack", label: "Adversarial Argument", description: "None/null was passed where a string was expected — tests whether the gateway crashes or cleanly denies malformed input."}};
+        }}
+        if (typeof resource !== 'string') {{
+          return {{kind: "attack", label: "Adversarial Argument", description: "A non-string value (list, dict, or number) was passed — tests type validation."}};
+        }}
+        if (resource === '') {{
+          return {{kind: "attack", label: "Adversarial Argument", description: "An empty string was passed as the resource — tests handling of degenerate input."}};
+        }}
+        if (resource.length > 200) {{
+          return {{kind: "attack", label: "Oversized Input", description: "A very long payload — tests for resource exhaustion or a missing length limit."}};
+        }}
+        if (resource.toLowerCase().includes('secret')) {{
+          return {{kind: "attack", label: "Secret Exfiltration Attempt", description: "Directly names or targets the protected secret file."}};
+        }}
+        if (resource.includes('../') || resource.startsWith('./')) {{
+          return {{kind: "attack", label: "Path Traversal", description: "Attempts to escape the sandbox using directory traversal segments."}};
+        }}
+        if (/\\u0000/.test(resource)) {{
+          return {{kind: "attack", label: "Null Byte Injection", description: "Embeds a null byte — a classic string-truncation / validation-bypass trick."}};
+        }}
+        if (/[\\uFF00-\\uFFEF]/.test(resource)) {{
+          return {{kind: "attack", label: "Unicode Homoglyph", description: "Uses a full-width lookalike character to evade exact-string filtering."}};
+        }}
+        if (resource.includes(';') || resource.includes('&&') || resource.includes('|')) {{
+          return {{kind: "attack", label: "Command Injection", description: "Attempts to chain a second command using a shell metacharacter."}};
+        }}
+        if (resource !== resource.trim()) {{
+          return {{kind: "attack", label: "Whitespace Variant", description: "Leading or trailing whitespace added to try to slip past an exact-match allow-list."}};
+        }}
+        if (resource === resource.toUpperCase() && resource !== resource.toLowerCase()) {{
+          return {{kind: "attack", label: "Case Variant", description: "An all-uppercase variant of a path — tests case-sensitive matching."}};
+        }}
+        return {{kind: "unknown", label: null, description: "No known attack pattern matched. Likely a legitimate resource."}};
+      }}
+
+      function getResourceInfo(resource) {{
+        if (resource !== null && resource !== undefined && Object.prototype.hasOwnProperty.call(resourceInfo, resource)) {{
+          return Object.assign({{known: true}}, resourceInfo[resource]);
+        }}
+        return Object.assign({{known: false}}, classify(resource));
+      }}
+
+      // --- Resource modal ---
+      function openModal(resource) {{
+        const info = getResourceInfo(resource);
+        const displayResource = (resource === null || resource === undefined) ? '(none)' : String(resource);
+
+        document.getElementById('modal-resource').textContent = displayResource;
+
+        const badgeRow = document.getElementById('modal-badge-row');
+        badgeRow.innerHTML = '';
+        if (info.label) {{
+          const badge = document.createElement('span');
+          badge.className = 'attack-badge';
+          badge.style.background = (KIND_COLORS[info.kind] || '#8b949e') + '22';
+          badge.style.color = KIND_COLORS[info.kind] || '#8b949e';
+          badge.style.borderColor = (KIND_COLORS[info.kind] || '#8b949e') + '55';
+          badge.textContent = info.label;
+          badgeRow.appendChild(badge);
+        }}
+
+        document.getElementById('modal-description').textContent = info.description || 'No description available.';
+
+        const contentWrap = document.getElementById('modal-content-wrap');
+        const contentEl = document.getElementById('modal-content');
+        if (info.content) {{
+          contentEl.textContent = info.content;
+          contentWrap.style.display = 'block';
+        }} else if (info.content_hidden) {{
+          contentEl.textContent = '🔒 Contents intentionally not shown — this is the file every attack in this lab tries to reach.';
+          contentWrap.style.display = 'block';
+        }} else {{
+          contentWrap.style.display = 'none';
+        }}
+
+        document.getElementById('resource-modal').style.display = 'flex';
+      }}
+
+      function closeModal() {{
+        document.getElementById('resource-modal').style.display = 'none';
+      }}
+
+      document.getElementById('modal-close-btn').addEventListener('click', closeModal);
+      document.getElementById('resource-modal').addEventListener('click', (e) => {{
+        if (e.target.id === 'resource-modal') closeModal();
+      }});
+
+      // --- Trace modal ---
+      function openTraceModal(taskId) {{
+        const taskEvents = events
+          .filter(e => e.task_id === taskId)
+          .slice()
+          .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+        if (taskEvents.length === 0) return;
+
+        const first = taskEvents[0];
+        document.getElementById('trace-title').textContent = `Task ${{taskId}}`;
+        document.getElementById('trace-meta').textContent =
+          `${{first.agent_name}} · work_type=${{first.work_type}} · ${{taskEvents.length}} event(s)`;
+
+        const stepsEl = document.getElementById('trace-steps');
+        stepsEl.innerHTML = '';
+        taskEvents.forEach((e, i) => {{
+          const div = document.createElement('div');
+          div.className = 'trace-step';
+          const marker = e.decision === 'allowed' ? 'OK' : 'BLOCKED';
+          const markerColor = e.decision === 'allowed' ? '#3fb950' : '#f85149';
+          const resourceDisplay = truncateStr(e.resource, 40);
+          div.innerHTML = `
+            <div class="trace-step-num">${{i + 1}}</div>
+            <div>step ${{e.step}}</div>
+            <div style="color:${{markerColor}}; font-weight:600;">${{marker}}</div>
+            <div>${{e.action}}: <code>${{escapeHtml(resourceDisplay)}}</code></div>
+            <div><span class="risk-pill" style="background:${{riskColor(e.risk_level)}}22; color:${{riskColor(e.risk_level)}};">${{riskLabel(e.risk_level)}}</span></div>
+            <div class="mono" style="text-align:right;">${{(e.timestamp.split('T')[1]||'').split('.')[0]}}</div>
+          `;
+          stepsEl.appendChild(div);
+          if (e.decision === 'blocked') {{
+            const reasonDiv = document.createElement('div');
+            reasonDiv.className = 'trace-step-reason';
+            reasonDiv.textContent = 'reason: ' + e.reason;
+            stepsEl.appendChild(reasonDiv);
+          }}
+        }});
+
+        const allowedCount = taskEvents.filter(e => e.decision === 'allowed').length;
+        const blockedCount = taskEvents.length - allowedCount;
+        document.getElementById('trace-summary').textContent =
+          `Summary: ${{allowedCount}} allowed, ${{blockedCount}} blocked`;
+
+        document.getElementById('trace-modal').style.display = 'flex';
+      }}
+
+      function closeTraceModal() {{
+        document.getElementById('trace-modal').style.display = 'none';
+      }}
+
+      document.getElementById('trace-modal-close-btn').addEventListener('click', closeTraceModal);
+      document.getElementById('trace-modal').addEventListener('click', (e) => {{
+        if (e.target.id === 'trace-modal') closeTraceModal();
+      }});
+
+      document.addEventListener('keydown', (e) => {{
+        if (e.key === 'Escape') {{ closeModal(); closeTraceModal(); }}
+      }});
+
+      // --- Events table ---
+      let currentFiltered = [];
+
       function render() {{
         const wt = workTypeSelect.value;
         const decision = decisionSelect.value;
@@ -256,34 +517,86 @@ def build_html(events):
           return true;
         }});
 
-        tbody.innerHTML = '';
-        if (filtered.length === 0) {{
-          tbody.innerHTML = '<tr><td colspan="7" class="empty">No matching events</td></tr>';
+        currentFiltered = filtered.slice(0, 200);
+        eventsTbody.innerHTML = '';
+
+        if (currentFiltered.length === 0) {{
+          eventsTbody.innerHTML = '<tr><td colspan="7" class="empty">No matching events</td></tr>';
         }} else {{
-          filtered.slice(0, 200).forEach(e => {{
+          currentFiltered.forEach((e, idx) => {{
             const tr = document.createElement('tr');
             const tsShort = (e.timestamp.split('T')[1] || '').split('.')[0];
-            const fullResource = (e.resource === null || e.resource === undefined) ? '(none)' : String(e.resource);
             tr.innerHTML = `
               <td class="mono">${{tsShort}}</td>
-              <td class="mono">${{e.task_id}}</td>
+              <td class="mono"><span class="task-cell" data-task-id="${{escapeHtml(e.task_id)}}">${{escapeHtml(e.task_id)}}</span></td>
               <td>${{e.work_type}}</td>
               <td>${{e.action}}</td>
-              <td><code title="${{escapeHtml(fullResource)}}">${{escapeHtml(truncateStr(e.resource))}}</code></td>
+              <td><code class="resource-cell" data-idx="${{idx}}">${{escapeHtml(truncateStr(e.resource))}}</code></td>
               <td><span class="risk-pill" style="background:${{riskColor(e.risk_level)}}22; color:${{riskColor(e.risk_level)}};">${{riskLabel(e.risk_level)}}</span></td>
               <td><span class="decision-pill ${{e.decision}}">${{e.decision.toUpperCase()}}</span></td>
             `;
-            tbody.appendChild(tr);
+            eventsTbody.appendChild(tr);
           }});
         }}
 
-        countLabel.textContent = `Showing ${{Math.min(filtered.length, 200)}} of ${{filtered.length}} matching (${{events.length}} total)`;
+        countLabel.textContent = `Showing ${{currentFiltered.length}} of ${{filtered.length}} matching (${{events.length}} total)`;
       }}
+
+      eventsTbody.addEventListener('click', (ev) => {{
+        const taskCell = ev.target.closest('.task-cell');
+        if (taskCell) {{
+          openTraceModal(taskCell.dataset.taskId);
+          return;
+        }}
+        const resCell = ev.target.closest('.resource-cell');
+        if (resCell) {{
+          const idx = parseInt(resCell.dataset.idx, 10);
+          const item = currentFiltered[idx];
+          if (item) openModal(item.resource);
+        }}
+      }});
 
       [workTypeSelect, decisionSelect, riskSelect].forEach(el => el.addEventListener('change', render));
       searchInput.addEventListener('input', render);
 
+      // --- Most Frequently Blocked Resources (rendered from full history, not filtered) ---
+      let topBlockedList = [];
+
+      function renderBlockedResources() {{
+        const counts = {{}};
+        events.forEach(e => {{
+          if (e.decision === 'blocked') {{
+            const key = (e.resource === null || e.resource === undefined) ? '(none)' : e.resource;
+            counts[key] = (counts[key] || 0) + 1;
+          }}
+        }});
+        topBlockedList = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 10);
+
+        blockedTbody.innerHTML = '';
+        if (topBlockedList.length === 0) {{
+          blockedTbody.innerHTML = '<tr><td colspan="2" class="empty">No blocked resources yet</td></tr>';
+          return;
+        }}
+        topBlockedList.forEach(([resource, count], idx) => {{
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td>${{count}}</td>
+            <td><code class="resource-cell" data-blocked-idx="${{idx}}">${{escapeHtml(truncateStr(resource))}}</code></td>
+          `;
+          blockedTbody.appendChild(tr);
+        }});
+      }}
+
+      blockedTbody.addEventListener('click', (ev) => {{
+        const cell = ev.target.closest('.resource-cell');
+        if (!cell) return;
+        const idx = parseInt(cell.dataset.blockedIdx, 10);
+        const item = topBlockedList[idx];
+        if (item) openModal(item[0]);
+      }});
+
       render();
+      renderBlockedResources();
     }})();
     </script>
     """
@@ -323,15 +636,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     border-bottom: 1px solid var(--border);
     padding-bottom: 16px;
   }}
-  h1 {{
-    margin: 0;
-    font-size: 22px;
-    color: #fff;
-  }}
-  .generated {{
-    color: var(--muted);
-    font-size: 13px;
-  }}
+  h1 {{ margin: 0; font-size: 22px; color: #fff; }}
+  .generated {{ color: var(--muted); font-size: 13px; }}
   .cards {{
     display: grid;
     grid-template-columns: repeat(5, 1fr);
@@ -345,17 +651,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     padding: 18px;
     text-align: center;
   }}
-  .card-value {{
-    font-size: 30px;
-    font-weight: 700;
-    color: #fff;
-  }}
+  .card-value {{ font-size: 30px; font-weight: 700; color: #fff; }}
   .card-label {{
-    font-size: 12px;
-    color: var(--muted);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    margin-top: 4px;
+    font-size: 12px; color: var(--muted); text-transform: uppercase;
+    letter-spacing: 0.05em; margin-top: 4px;
   }}
   .allowed-card .card-value {{ color: var(--green); }}
   .blocked-card .card-value {{ color: var(--red); }}
@@ -374,11 +673,12 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   }}
   .panel.wide {{ grid-column: 1 / -1; }}
   .panel h2 {{
-    font-size: 14px;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--muted);
-    margin: 0 0 14px 0;
+    font-size: 14px; text-transform: uppercase; letter-spacing: 0.05em;
+    color: var(--muted); margin: 0 0 14px 0;
+  }}
+  .panel h2 .hint {{
+    text-transform: none; letter-spacing: normal; font-weight: 400;
+    color: #6e7681; font-size: 12px;
   }}
 
   .bar-row {{
@@ -391,77 +691,102 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   }}
   .bar-label {{ color: var(--text); text-transform: capitalize; }}
   .bar-track {{
-    display: flex;
-    height: 14px;
-    border-radius: 4px;
-    overflow: hidden;
-    background: #21262d;
+    display: flex; height: 14px; border-radius: 4px;
+    overflow: hidden; background: #21262d;
   }}
   .bar-count {{ color: var(--muted); text-align: right; }}
 
   .filters {{
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin-bottom: 14px;
-    flex-wrap: wrap;
+    display: flex; align-items: center; gap: 10px;
+    margin-bottom: 14px; flex-wrap: wrap;
   }}
   .filters select, .filters input {{
-    background: #0d1117;
-    border: 1px solid var(--border);
-    color: var(--text);
-    border-radius: 6px;
-    padding: 6px 10px;
-    font-size: 13px;
+    background: #0d1117; border: 1px solid var(--border); color: var(--text);
+    border-radius: 6px; padding: 6px 10px; font-size: 13px;
   }}
   .filters input {{ flex: 1; min-width: 160px; }}
   .filter-count {{ color: var(--muted); font-size: 12px; margin-left: auto; }}
 
   table {{
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 13px;
-    table-layout: fixed;
+    width: 100%; border-collapse: collapse; font-size: 13px; table-layout: fixed;
   }}
   th {{
-    text-align: left;
-    color: var(--muted);
-    font-weight: 500;
-    text-transform: uppercase;
-    font-size: 11px;
-    letter-spacing: 0.04em;
-    padding: 8px 10px;
-    border-bottom: 1px solid var(--border);
+    text-align: left; color: var(--muted); font-weight: 500;
+    text-transform: uppercase; font-size: 11px; letter-spacing: 0.04em;
+    padding: 8px 10px; border-bottom: 1px solid var(--border);
   }}
-  td {{
-    padding: 8px 10px;
-    border-bottom: 1px solid #21262d;
-    overflow: hidden;
-  }}
+  td {{ padding: 8px 10px; border-bottom: 1px solid #21262d; overflow: hidden; }}
   tr:last-child td {{ border-bottom: none; }}
   code {{
-    background: #21262d;
-    padding: 2px 6px;
-    border-radius: 4px;
-    font-size: 12px;
-    color: #79c0ff;
-    display: inline-block;
-    max-width: 100%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    vertical-align: bottom;
+    background: #21262d; padding: 2px 6px; border-radius: 4px;
+    font-size: 12px; color: #79c0ff; display: inline-block; max-width: 100%;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom;
   }}
+  .resource-cell, .task-cell {{ cursor: pointer; }}
+  .resource-cell:hover {{ background: #30363d; text-decoration: underline; }}
+  .task-cell:hover {{ color: var(--accent); text-decoration: underline; }}
   .mono {{ font-family: "SF Mono", Consolas, monospace; color: var(--muted); }}
   .risk-pill, .decision-pill {{
-    padding: 2px 8px;
-    border-radius: 10px;
-    font-size: 11px;
-    font-weight: 600;
+    padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600;
   }}
   .decision-pill.allowed {{ background: #3fb95022; color: var(--green); }}
   .decision-pill.blocked {{ background: #f8514922; color: var(--red); }}
   .empty {{ color: var(--muted); text-align: center; padding: 20px; }}
+
+  .modal-overlay {{
+    position: fixed; inset: 0; background: rgba(0,0,0,0.65);
+    align-items: center; justify-content: center; z-index: 1000; padding: 20px;
+  }}
+  .modal-card {{
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 24px; max-width: 640px; width: 100%; max-height: 80vh;
+    overflow-y: auto; position: relative;
+  }}
+  .modal-card.wide-card {{ max-width: 760px; }}
+  .modal-close {{
+    position: absolute; top: 10px; right: 14px; background: none; border: none;
+    color: var(--muted); font-size: 22px; cursor: pointer; line-height: 1;
+  }}
+  .modal-close:hover {{ color: var(--text); }}
+  .modal-resource {{
+    font-size: 13px; background: #0d1117; border: 1px solid var(--border);
+    border-radius: 6px; padding: 10px 12px; margin-bottom: 12px;
+    word-break: break-all; color: #79c0ff;
+  }}
+  .attack-badge {{
+    display: inline-block; border: 1px solid; padding: 3px 10px;
+    border-radius: 12px; font-size: 12px; font-weight: 600; margin-bottom: 12px;
+  }}
+  #modal-description {{ color: var(--text); font-size: 14px; line-height: 1.5; margin: 0 0 4px 0; }}
+  #modal-content-wrap h3 {{ font-size: 12px; text-transform: uppercase; color: var(--muted); margin: 16px 0 8px 0; }}
+  #modal-content-wrap pre {{
+    background: #0d1117; border: 1px solid var(--border); border-radius: 6px;
+    padding: 12px; font-size: 12px; white-space: pre-wrap; word-break: break-word;
+    max-height: 240px; overflow-y: auto; color: var(--text); margin: 0;
+  }}
+
+  .trace-title {{ font-size: 16px; font-weight: 700; color: #fff; margin-bottom: 4px; }}
+  .trace-meta {{ color: var(--muted); font-size: 12px; }}
+  .trace-steps {{ display: flex; flex-direction: column; gap: 8px; margin: 16px 0; }}
+  .trace-step {{
+    display: grid;
+    grid-template-columns: 22px 56px 66px 1fr 66px 74px;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    background: #0d1117;
+    border: 1px solid var(--border);
+    font-size: 12px;
+  }}
+  .trace-step-num {{ color: var(--muted); font-weight: 600; text-align: center; }}
+  .trace-step-reason {{
+    color: var(--red); font-size: 11px; padding-left: 36px; margin-top: -6px;
+  }}
+  .trace-summary {{
+    color: var(--muted); font-size: 13px; border-top: 1px solid var(--border);
+    padding-top: 12px; margin-top: 4px;
+  }}
 </style>
 </head>
 <body>

@@ -1,0 +1,5 @@
+Incident Response Guide
+
+If a system incident occurs, check the status page first, then
+escalate per the on-call rotation. Update the incident channel with
+your current status every 30 minutes until resolved.

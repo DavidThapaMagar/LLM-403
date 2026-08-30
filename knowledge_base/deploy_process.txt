@@ -1,0 +1,5 @@
+Deploy Process Overview
+
+Deployments are triggered automatically after the test suite passes.
+The deploy pipeline reports status back to the team channel. Check
+the pipeline dashboard for the current system deployment status.

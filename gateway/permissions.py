@@ -1,16 +1,5 @@
 from gateway.risk import LOW, MEDIUM, HIGH
 
-# Task-scoped permission sets, keyed by work_type.
-# These are intersected with the global ALLOWED lists in policy.py —
-# a work_type can never grant more access than the global ceiling allows.
-#
-# "expires_after_step": grants are only valid while
-# context.steps_taken <= this value. None = no expiry (lasts whole task).
-#
-# "max_risk": the highest risk level (see gateway/risk.py) this work
-# type is trusted to perform. An action whose risk exceeds this is
-# denied even if it passes the ceiling and task-scope checks.
-
 TASK_PERMISSIONS = {
     "test": {
         "read": None,
@@ -29,7 +18,8 @@ TASK_PERMISSIONS = {
                   "attacks/malicious_notes_v6.txt",
                   "attacks/malicious_notes_v7a.txt",
                   "attacks/malicious_notes_v7b.txt",
-                  "attacks/malicious_notes_v7c.txt"],
+                  "attacks/malicious_notes_v7c.txt",
+                  "attacks/malicious_notes_a2a.txt"],
         "write": ["sandbox/notes.txt"],
         "command": [],
         "expires_after_step": 2,
@@ -49,19 +39,53 @@ TASK_PERMISSIONS = {
         "expires_after_step": None,
         "max_risk": LOW,
     },
+    "orchestrator": {
+        "read": None,
+        "write": [],
+        "command": [],
+        "expires_after_step": None,
+        "max_risk": MEDIUM,
+    },
 }
 
 DEFAULT_WORK_TYPE = "general"
 
 
+def _intersect_list(own, parent):
+    if own is None:
+        return parent
+    if parent is None:
+        return own
+    return [item for item in own if item in parent]
+
+
+def _intersect_min(own, parent):
+    if own is None:
+        return parent
+    if parent is None:
+        return own
+    return min(own, parent)
+
+
 def get_task_permissions(context):
-    return TASK_PERMISSIONS.get(context.work_type, TASK_PERMISSIONS[DEFAULT_WORK_TYPE])
+    own = TASK_PERMISSIONS.get(context.work_type, TASK_PERMISSIONS[DEFAULT_WORK_TYPE])
+
+    if context.parent_context is None:
+        return own
+
+    parent_permissions = get_task_permissions(context.parent_context)
+
+    return {
+        "read": _intersect_list(own["read"], parent_permissions["read"]),
+        "write": _intersect_list(own["write"], parent_permissions["write"]),
+        "command": _intersect_list(own["command"], parent_permissions["command"]),
+        "expires_after_step": _intersect_min(own["expires_after_step"], parent_permissions["expires_after_step"]),
+        "max_risk": min(own["max_risk"], parent_permissions["max_risk"]),
+    }
 
 
 def is_grant_active(context):
-    """True if the task's grants haven't expired yet (by step count)."""
     expiry = get_task_permissions(context)["expires_after_step"]
     if expiry is None:
         return True
     return context.steps_taken <= expiry
-
