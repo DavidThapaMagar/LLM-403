@@ -12,7 +12,7 @@ import sys
 from .world import World
 from .tools import execute
 from .tasks import TASKS
-from .gateways import NoGateway, TightGrants
+from .gateways import NoGateway, TightGrants, ChainGuard
 
 
 def make_gateway(name, task):
@@ -20,6 +20,8 @@ def make_gateway(name, task):
         return NoGateway()
     if name == "tight":
         return TightGrants(task["grants"])
+    if name == "chain":
+        return ChainGuard(task["grants"])
     raise SystemExit(f"unknown gateway: {name}")
 
 

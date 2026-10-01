@@ -76,5 +76,9 @@ def execute(world, tool, args, gateway=None):
         "allowed": allowed,
         "reason": reason,
     })
+    
+    if allowed and gateway is not None:
+        gateway.observe(world, tool, args, result) 
+
     world.note_result(result)
     return result
